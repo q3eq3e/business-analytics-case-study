@@ -1,0 +1,1176 @@
+---
+title: "Creating market dataset"
+output: html_document
+date: "2025-12-02"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Worksheet of creating market dataset #
+
+We want to describe the market for the sales of XXX company. In order to do that, we want to create dataset with market indicies to understand the influence of economic data on sales, therefore enrich original data with economic ones, such as total population, PIB, PIB per capita, deaths, marriages, population distribution taking into account age, number of shops with flowers and also time needed to travel by car from Valencia to given province. We took those data from INE website, Cámara de Comercio and Open Route Service API.
+
+The company is related to flowers, so deaths or marriages could be crucial, because they are associated with flowers. They are one of the occasions when people buy flowers. PIB could describe how much people here can in total afford to buy and PIB per capita how wealthy people are there and to distinguish whether given province is rich or not. Poor people tend to buy less flowers not only because they have less money, but also because flowers are not essential to live. It can be said that flowers are very slightly luxurious, so the relation is not proportional. The number of people could describe the potential demand. Our research also showed that the sales of the flowers varies depending on the age of customer. Some age groups tend to buy more flowers than others. That is why we also included age distribution. Number of shops goes along with accessibility, demand and also competition between shops and as a result, affordable prizes for customers. Time needed to travel goes along with the distance to the province, hence it represents the cost of the transport. But time is more precise than the distance, because some provinces are islands or are on the other coast of Mediterrean Sea (for example Ceuta) and a ship is needed there, which requires more time and cost. What is more, time can also goes along with the length of a delivery time. Additionally, XXX data about sales in France show that the closer to Spain the province is, the more flowers are sold there. So we also want to see whether it matters in Spain.
+
+Our XXX data were from 2022 to 2024 but some of the economic data such as PIB, deaths, marriages or population for different ages were only until the end of 2023. So we decided to predict values for 2024 year, according to previous values of each indicator for each province. Values are changing in time so we decided to choose ARIMA model (Autoregressive Integrated Moving Average) that works well for time series.
+
+## Predicting PIB ##
+
+But before predicting we have to focus on minor changes in data in order to adapt raw data to ARIMA model.
+
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(forecast)
+
+data <- read.csv('raw_pib_provinces.csv', sep=';', fileEncoding = "Windows-1252")
+
+replace_provinces <- function(df, replacements) {
+  for (old_name in names(replacements)) {
+    df$Province[df$Province == old_name] <- replacements[[old_name]]
+  }
+  return(df)
+}
+
+replacements <- list(
+  "A Coru?a" = "A Coruña"
+)
+
+data <- replace_provinces(data, replacements)
+
+colnames(data)[-1] <- substr(colnames(data)[-1], 2, nchar(colnames(data)[-1]))
+
+data_long <- data %>%
+  mutate(across(-Province, as.character)) %>% 
+  pivot_longer(cols = -Province, names_to = "Date", values_to = "PIB")
+
+
+data_long_clean <- data_long %>%
+  drop_na(PIB)
+
+data_long_clean$PIB <- gsub(" ", "", data_long_clean$PIB)
+data_long_clean$PIB <- as.numeric(data_long_clean$PIB)
+
+data_long_clean <- data_long_clean %>%
+  drop_na(PIB)
+
+
+data_long_clean <- data_long_clean %>%
+  arrange(Province, Date)
+
+data_wide <- data_long_clean %>%
+  pivot_wider(names_from = Date, values_from = PIB)
+```
+
+Now all data are numeric and cleaned from NA values. Ready to use them in model. But before we will take a look how PIB looks like for example province.
+
+```{r}
+year_cols <- setdiff(colnames(data_wide), "Province")
+year_cols_num <- as.numeric(year_cols)
+
+ts_list <- list()
+
+for (province in unique(data_wide$Province)) {
+  row <- data_wide %>% filter(Province == province)
+  values <- as.numeric(row[ , year_cols])
+  ts_list[[province]] <- ts(values,
+                            start = min(year_cols_num),
+                            frequency = 1)
+}
+
+granada_long <- data_wide %>%
+  filter(Province == "Granada") %>%
+  pivot_longer(
+    cols = all_of(year_cols),
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  mutate(Year = as.numeric(Year))
+
+ggplot(granada_long, aes(x = Year, y = Value)) +
+  geom_line(color = "blue", linewidth = 1) +
+  geom_point() +
+  labs(title = "PIB for Granada",
+       x = "Year",
+       y = "PIB") +
+  theme_minimal()
+```
+
+Now we will use ARIMA model to predict PIB values for 2024 year
+
+```{r}
+data_wide_with_forecast <- data_wide
+
+for (province in names(ts_list)) {
+  #print(province)
+  province_ts <- ts_list[[province]]
+  
+  fit <- auto.arima(province_ts)
+  
+  #forecasting
+  fc <- forecast(fit, h = 1)
+  
+  data_wide_with_forecast[data_wide_with_forecast$Province==province, '2024'] <- round(as.numeric(fc$mean[1]))
+}
+
+
+#write.csv(data_wide_with_forecast, "pib_final.csv", row.names = FALSE)
+
+```
+
+Now we have predicted values for 2024 and will take a look how they for example look like compared to real values.
+```{r}
+province <- "Granada"
+
+province_data_long <- data_wide_with_forecast %>%
+  filter(Province == province) %>%
+  select(-Province) %>%
+  pivot_longer(cols = everything(), names_to = "Year", values_to = "PIB") %>%
+  mutate(
+    Year = as.numeric(Year)
+  )
+
+ggplot(province_data_long, aes(x = Year, y = PIB)) +
+  geom_line(color = "blue") +
+  geom_point(size = 2) +
+  labs(title = paste("PIB for", province),
+       x = "Year",
+       y = "PIB") +
+  theme_minimal() +
+  scale_x_continuous(breaks = seq(min(province_data_long$Year),
+                                  max(province_data_long$Year),
+                                  by = 1)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Predicted data could be a real value.
+
+## Predicting marriages ##
+
+Similarly as for PIB, we will use ARIMA model that works well for time series. But before predicting we have to focus on minor changes in data in order to adapt raw data to ARIMA model.
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(forecast)
+
+data <- read.csv('raw_malzenstwa.csv', sep=';', fileEncoding = "Windows-1252")
+
+
+colnames(data)[1] <- "Province"
+
+data$Province <- sapply(strsplit(data$Province, " "), function(x) paste(x[-1], collapse = " "))
+
+replace_provinces <- function(df, replacements) {
+  for (old_name in names(replacements)) {
+    df$Province[df$Province == old_name] <- replacements[[old_name]]
+  }
+  return(df)
+}
+
+replacements <- list(
+  "Alicante/Alacant" = "Alicante",
+  "Araba/Álava"  = "Álava",
+  "Bizkaia" = "Vizcaya",
+  "Castellón/Castelló" = "Castellón",
+  "Coru?a, A" = "A Coruña",
+  "Gipuzkoa" = "Guipuzcoa",
+  "Palmas, Las"  = "Las Palmas",
+  "Rioja, La" = "La Rioja",
+  "Valencia/Val?ncia" = "Valencia"
+)
+data <- replace_provinces(data, replacements)
+
+colnames(data)[-1] <- substr(colnames(data)[-1], 2, nchar(colnames(data)[-1]))
+
+data_long <- data %>%
+  mutate(across(-Province, as.character)) %>% 
+  pivot_longer(cols = -Province, names_to = "Date", values_to = "Marriages")
+
+data_long$Date <- gsub("M", "-", data_long$Date)
+data_long$Date <- ymd(paste0(data_long$Date, "-01"))
+
+
+data_long_clean <- data_long %>%
+  drop_na(Marriages)
+
+data_long_clean$Marriages <- gsub(" ", "", data_long_clean$Marriages)
+data_long_clean$Marriages <- as.numeric(data_long_clean$Marriages)
+
+data_long_clean <- data_long_clean %>%
+  drop_na(Marriages)
+
+
+data_long_clean <- data_long_clean %>%
+  arrange(Province, Date)
+
+data_wide <- data_long_clean %>%
+  pivot_wider(names_from = Date, values_from = Marriages)
+```
+
+Now all data are numeric and cleaned from NA values. Ready to use them in model. But before we will take a look how data look like for example province.
+
+```{r}
+ts_list <- list()
+
+for (province in unique(data_long_clean$Province)) {
+  province_data <- data_long_clean %>% filter(Province == province)
+  
+  ts_province <- ts(province_data$Marriages, 
+                    start = c(year(min(province_data$Date)), month(min(province_data$Date))), 
+                    frequency = 12)
+  
+  ts_list[[province]] <- ts_province
+}
+
+province_data <- data_long_clean %>% filter(Province == "Granada")
+
+province_data <- province_data %>%
+  filter(Date >= as.Date("2010-01-01") & Date <= as.Date("2024-12-01"))
+
+ggplot(province_data, aes(x = Date, y = Marriages)) +
+  geom_line() +
+  labs(title = "Marriages in Granada in recent years", x = "Time", y = "Marriages")
+```
+
+As we can see, data is very much seasonal with 2 peaks during year - usually in June and September. This is because the weather is the best in that time. On the other side, the least marriages are in winter. There is also some missing data from the beginning of 2020 because of the pandemy.
+Now we will use ARIMA model to predict values for 2024 year.
+
+```{r}
+data_wide_with_forecast <- data_wide
+
+for (province in names(ts_list)) {
+  #print(province)
+  province_ts <- ts_list[[province]]
+  
+  fit <- auto.arima(province_ts)
+  
+  #forecasting
+  forecastedValues <- forecast(fit, h = 12)
+  
+  forecast_values <- forecastedValues$mean
+  forecast_dates <- seq(ymd("2024-01-01"), by = "month", length.out = 12)
+  
+  forecast_column_names <- format(forecast_dates, "%YM%m")  # "2024M01", "2024M02", ...
+  
+  for (i in 1:12) {
+    data_wide_with_forecast[data_wide_with_forecast$Province==province, forecast_column_names[i]] <- round(forecast_values[i])
+  }
+}
+
+#adjusting column names
+for (i in 2:985){
+  year <- 1941 + (i - 2) %/% 12
+  month <- ((i-2) %% 12) + 1
+  if(year > 1974){year = year+1} # skipping 1975 year
+  colnames(data_wide_with_forecast)[i] <- paste(year, "M", sprintf("%02d", month), sep = "")
+}
+
+#write.csv(data_wide_with_forecast, "marriages_final.csv", row.names = FALSE)
+
+```
+
+
+Now we have predicted values for 2024 and will take a look how they for example look like compared to real values. They keep the seasonal trend.
+```{r}
+province <- "Granada"
+
+province_data <- data_wide_with_forecast %>%
+  filter(Province == province) %>%
+  select(-Province)
+
+province_data_long <- province_data %>%
+  pivot_longer(cols = everything(), names_to = "Date", values_to = "Marriages")
+
+province_data_long$Date <- as.Date(paste0(substr(province_data_long$Date, 1, 4), "-", 
+                                           substr(province_data_long$Date, 6, 7), "-01"))
+
+province_data_long <- province_data_long %>%
+  filter(Date >= as.Date("2010-01-01") & Date <= as.Date("2024-12-01"))
+
+ggplot(province_data_long, aes(x = Date, y = Marriages)) +
+  geom_line(color = "blue") +
+  labs(title = paste("Marriages for ", province),
+       x = "Time",
+       y = "Marriages") +
+  theme_minimal() +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 year") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+Predictor found the seasonal trend and the data could be a real value and is very close to estimated value that could be found on the internet.
+
+## Predicting deaths ##
+
+Similarly as for PIB and marriages, we will use ARIMA model that works well for time series. But before predicting we have to focus on minor changes in data in order to adapt raw data to ARIMA model.
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(forecast)
+
+data <- read.csv('raw_zgony.csv', sep=';', fileEncoding = "Windows-1252")
+
+colnames(data)[1] <- "Province"
+
+data$Province <- sapply(strsplit(data$Province, " "), function(x) paste(x[-1], collapse = " "))
+
+replace_provinces <- function(df, replacements) {
+  for (old_name in names(replacements)) {
+    df$Province[df$Province == old_name] <- replacements[[old_name]]
+  }
+  return(df)
+}
+
+replacements <- list(
+  "Alicante/Alacant" = "Alicante",
+  "Araba/Álava"  = "Álava",
+  "Bizkaia" = "Vizcaya",
+  "Castellón/Castelló" = "Castellón",
+  "Coru?a, A" = "A Coruña",
+  "Gipuzkoa" = "Guipuzcoa",
+  "Palmas, Las"  = "Las Palmas",
+  "Rioja, La" = "La Rioja",
+  "Valencia/Val?ncia" = "Valencia",
+  "residente" = "No residente"
+)
+
+data <- replace_provinces(data, replacements)
+data$Province[1] <- "Total"
+
+colnames(data)[-1] <- substr(colnames(data)[-1], 2, nchar(colnames(data)[-1]))
+
+data_long <- data %>%
+  mutate(across(-Province, as.character)) %>% 
+  pivot_longer(cols = -Province, names_to = "Date", values_to = "Deaths")
+
+data_long$Date <- gsub("M", "-", data_long$Date)
+data_long$Date <- ymd(paste0(data_long$Date, "-01"))
+
+
+data_long_clean <- data_long %>%
+  drop_na(Deaths)
+
+data_long_clean$Deaths <- gsub(" ", "", data_long_clean$Deaths)
+data_long_clean$Deaths <- as.numeric(data_long_clean$Deaths)
+
+data_long_clean <- data_long_clean %>%
+  drop_na(Deaths)
+
+
+data_long_clean <- data_long_clean %>%
+  arrange(Province, Date)
+
+data_wide <- data_long_clean %>%
+  pivot_wider(names_from = Date, values_from = Deaths)
+```
+
+Now all data are numeric and cleaned from NA values. Ready to use them in model. But before we will take a look how data look like for example province.
+
+```{r}
+ts_list <- list()
+
+for (province in unique(data_long_clean$Province)) {
+  province_data <- data_long_clean %>% filter(Province == province)
+  
+  ts_province <- ts(province_data$Deaths, 
+                    start = c(year(min(province_data$Date)), month(min(province_data$Date))), 
+                    frequency = 12)
+  
+  ts_list[[province]] <- ts_province
+}
+
+province_data <- data_long_clean %>% filter(Province == "Granada")
+
+province_data <- province_data %>%
+  filter(Date >= as.Date("2010-01-01") & Date <= as.Date("2024-12-01"))
+
+ggplot(province_data, aes(x = Date, y = Deaths)) +
+  geom_line() +
+  labs(title = "Deaths in Granada in recent years", x = "Time", y = "Deaths")
+
+```
+
+As we can see data are seasonal, with peaks of deaths usually in January. Also one in few years this peak is higher than usually - this can be some kind of epidemy.
+Now we will use ARIMA model to predict values for 2024 year
+
+```{r}
+data_wide_with_forecast <- data_wide
+
+for (province in names(ts_list)) {
+  #print(province)
+  province_ts <- ts_list[[province]]
+  
+  fit <- auto.arima(province_ts)
+  
+  #forecasting
+  forecastedValues <- forecast(fit, h = 12)
+  
+  forecast_values <- forecastedValues$mean
+  forecast_dates <- seq(ymd("2024-01-01"), by = "month", length.out = 12)
+  
+  forecast_column_names <- format(forecast_dates, "%YM%m")  # "2024M01", "2024M02", ...
+  
+  for (i in 1:12) {
+    data_wide_with_forecast[data_wide_with_forecast$Province==province, forecast_column_names[i]] <- round(forecast_values[i])
+  }
+}
+
+#adjusting column names
+for (i in 2:588){
+  year <- 1975 + (i - 2) %/% 12
+  month <- ((i-2) %% 12) + 1
+  colnames(data_wide_with_forecast)[i] <- paste(year, "M", sprintf("%02d", month), sep = "")
+}
+
+#write.csv(data_wide_with_forecast, "deaths_final.csv", row.names = FALSE)
+```
+
+Now we have predicted values for 2024 and will take a look how they for example look like compared to real values.
+```{r}
+province <- "Granada"
+
+province_data <- data_wide_with_forecast %>%
+  filter(Province == province) %>%
+  select(-Province)
+
+province_data_long <- province_data %>%
+  pivot_longer(cols = everything(), names_to = "Date", values_to = "Deaths")
+
+province_data_long$Date <- as.Date(paste0(substr(province_data_long$Date, 1, 4), "-", 
+                                           substr(province_data_long$Date, 6, 7), "-01"))
+
+province_data_long <- province_data_long %>%
+  filter(Date >= as.Date("2010-01-01") & Date <= as.Date("2024-12-01"))
+
+ggplot(province_data_long, aes(x = Date, y = Deaths)) +
+  geom_line(color = "blue") +
+  labs(title = paste("Deaths for ", province),
+       x = "Time",
+       y = "Deaths") +
+  theme_minimal() +
+  scale_x_date(date_labels = "%b %Y", date_breaks = "1 year") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Predictor found the seasonality and the data could be real values.
+
+
+## Predicting population of each age group ##
+
+Similarly as for indicies above, we will use ARIMA model that works well for time series. But before predicting we have to focus on minor changes in data in order to adapt raw data to ARIMA model.
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(forecast)
+
+data_part1 <- read.csv('part1.csv', sep=';', fileEncoding = "Windows-1252")
+data_part2 <- read.csv('part2.csv', sep=';', fileEncoding = "Windows-1252")
+data_part3 <- read.csv('part3.csv', sep=';', fileEncoding = "Windows-1252")
+data_part4 <- read.csv('part4.csv', sep=';', fileEncoding = "Windows-1252")
+data_part5 <- read.csv('part5.csv', sep=';', fileEncoding = "Windows-1252")
+
+data <- bind_rows(data_part1, data_part2, data_part3, data_part4, data_part5)
+data$National.Total <- NULL
+data$Autonomous.Communities.and.Cities <- NULL
+data$Sex <- NULL
+data$Spanish.Foreigners <- NULL
+
+colnames(data)[1] <- "Province"
+colnames(data)[2] <- "Age"
+colnames(data)[3] <- "Year"
+
+data$Province <- sapply(strsplit(data$Province, " "), function(x) paste(x[-1], collapse = " "))
+data$Age <- sapply(strsplit(data$Age, " "), function(x) paste(x[1], collapse = " "))
+data$Year <- sapply(strsplit(data$Year, " "), function(x) paste(x[3], collapse = " "))
+data$Total <- as.numeric(gsub(",", "", data$Total))
+
+replace_provinces <- function(df, replacements) {
+  for (old_name in names(replacements)) {
+    df$Province[df$Province == old_name] <- replacements[[old_name]]
+  }
+  return(df)
+}
+
+replacements <- list(
+  "Alicante/Alacant" = "Alicante",
+  "Araba/Álava"  = "Álava",
+  "Bizkaia" = "Vizcaya",
+  "Castellón/Castelló" = "Castellón",
+  "Coruña, A" = "A Coruña",
+  "Gipuzkoa" = "Guipuzcoa",
+  "Palmas, Las"  = "Las Palmas",
+  "Rioja, La" = "La Rioja",
+  "Valencia/València" = "Valencia"
+)
+data <- replace_provinces(data, replacements)
+
+#write.csv(data, 'age_data.csv', row.names = FALSE)
+data <- read.csv('age_data.csv', sep=';', fileEncoding = "Windows-1252")
+
+replace_provinces <- function(df, replacements) {
+  for (old_name in names(replacements)) {
+    df$Province[df$Province == old_name] <- replacements[[old_name]]
+  }
+  return(df)
+}
+
+replacements <- list(
+  "A Coru?a" = "A Coruña"
+)
+data <- replace_provinces(data, replacements)
+
+data <- data %>%
+  mutate(AgeGroup = case_when(
+    Age >= 0  & Age <= 34 ~ "0-34",
+    Age >= 35 & Age <= 44 ~ "35-44",
+    Age >= 45 & Age <= 54 ~ "45-54",
+    Age >= 55             ~ "55+",
+    TRUE ~ NA_character_
+  )) %>%
+  group_by(Province, Year, AgeGroup) %>%
+  summarise(Total = sum(Total, na.rm = TRUE), .groups = "drop")
+
+
+data <- data %>%
+  mutate(across(
+    .cols = Total,
+    .fns = ~ as.numeric(gsub(",", "", .))
+  ))
+```
+
+Now all data are numeric and cleaned from NA values. Ready to use them in model, so now we will use ARIMA model to predict values for 2024 year.
+
+```{r}
+data_wide <- data %>%
+  pivot_wider(names_from = Year, values_from = Total)
+
+
+years <- names(data_wide)[!(names(data_wide) %in% c("Province", "AgeGroup"))]
+years <- as.numeric(years)
+
+
+year_cols <- setdiff(colnames(data_wide), c("Province", "AgeGroup"))
+year_cols_num <- as.numeric(year_cols)
+
+ts_list <- list()
+
+for (province in unique(data_wide$Province)) {
+  ts_list[[province]] <- list()
+  for (age_group in unique(data_wide$AgeGroup)){
+    
+
+    row <- data_wide %>% filter(Province == province) %>% filter(AgeGroup == age_group)
+    values <- as.numeric(row[ , year_cols])
+    ts_list[[province]][[age_group]] <- ts(values,
+                            start = min(year_cols_num),
+                            frequency = 1)
+  }
+}
+
+data_wide_with_forecast <- data_wide
+
+for (province in names(ts_list)) {
+  for (age_group in unique(data_wide$AgeGroup)){
+  #print(province)
+    current_ts <- ts_list[[province]][[age_group]]
+  
+    fit <- auto.arima(current_ts)
+  
+    #forecasting
+    fc <- forecast(fit, h = 2)
+  
+    fc_values <- round(as.numeric(fc$mean))
+
+    idx <- which(
+      data_wide_with_forecast$Province == province &
+      data_wide_with_forecast$AgeGroup == age_group
+    )
+
+    data_wide_with_forecast$`2023`[idx] <- fc_values[1]
+    data_wide_with_forecast$`2024`[idx] <- fc_values[2]
+  }
+}
+
+#write.csv(data_wide_with_forecast, "age_final.csv", row.names = FALSE)
+```
+
+
+Now we will look how predicted values look like compared to real values in Granada for each age group. First young people (0-34)
+```{r}
+year_cols <- setdiff(colnames(data_wide_with_forecast), c("Province", "AgeGroup"))
+granada_long_young <- data_wide_with_forecast %>%
+  filter(Province == "Granada") %>% filter(AgeGroup == "0-34") %>%
+  pivot_longer(
+    cols = all_of(year_cols),
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  mutate(Year = as.numeric(Year)) %>% filter(Year > 2016)
+
+ggplot(granada_long_young, aes(x = Year, y = Value)) +
+  geom_line(color = "blue", linewidth = 1) +
+  geom_point() +
+  labs(title = "Young people for Granada (0-34)",
+       x = "Year",
+       y = "Number of people") +
+  theme_minimal()
+```
+
+Predicted values make sense.
+Now time for group 35-44.
+
+```{r}
+granada_long <- data_wide_with_forecast %>%
+  filter(Province == "Granada") %>% filter(AgeGroup == "35-44") %>%
+  pivot_longer(
+    cols = all_of(year_cols),
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  mutate(Year = as.numeric(Year)) %>% filter(Year > 2016)
+
+ggplot(granada_long, aes(x = Year, y = Value)) +
+  geom_line(color = "blue", linewidth = 1) +
+  geom_point() +
+  labs(title = "People for Granada (35-44)",
+       x = "Year",
+       y = "Number of people") +
+  theme_minimal()
+```
+
+Here predictor works well as well.
+Age group 45-54:
+
+```{r}
+granada_long <- data_wide_with_forecast %>%
+  filter(Province == "Granada") %>% filter(AgeGroup == "45-54") %>%
+  pivot_longer(
+    cols = all_of(year_cols),
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  mutate(Year = as.numeric(Year)) %>% filter(Year > 2016)
+
+ggplot(granada_long, aes(x = Year, y = Value)) +
+  geom_line(color = "blue", linewidth = 1) +
+  geom_point() +
+  labs(title = "People for Granada (45-54)",
+       x = "Year",
+       y = "Number of people") +
+  theme_minimal()
+```
+
+Also results look real.
+And time for the oldest group (55+)
+
+```{r}
+granada_long <- data_wide_with_forecast %>%
+  filter(Province == "Granada") %>% filter(AgeGroup == "55+") %>%
+  pivot_longer(
+    cols = all_of(year_cols),
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  mutate(Year = as.numeric(Year)) %>% filter(Year > 2016)
+
+ggplot(granada_long, aes(x = Year, y = Value)) +
+  geom_line(color = "blue", linewidth = 1) +
+  geom_point() +
+  labs(title = "Oldest group of people for Granada (55+)",
+       x = "Year",
+       y = "Number of people") +
+  theme_minimal()
+```
+
+Again predicted data look as they could be real.
+
+Now we will merge those 5 datasets (population, PIB, deaths, marriages, age groups)into one big dataset with the same date columns. Some values are monthly, other are annually. Therefore, all the annual data will be duplicated and have the same value for the whole year.
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(stringr)
+
+#POPULATION
+
+populacja_data <- read.csv('population_spain_final.csv', sep=',')
+colnames(populacja_data) <- c('Province', 2024, 2023, 2022, 2021)
+populacja_data <- populacja_data %>%
+  mutate(across(
+    .cols = -Province,
+    .fns = ~ as.numeric(gsub(",", "", .))
+  ))
+
+
+population_years <- names(populacja_data)[names(populacja_data) != "Province"]
+
+population_years <- as.numeric(population_years)
+
+min_year <- min(population_years)
+max_year <- max(population_years)
+
+
+all_dates <- expand.grid(
+  Year = 1941:2024,
+  Month = sprintf("%02d", 1:12)
+) %>%
+  mutate(Date = paste0(Year, "M", Month)) %>%
+  pull(Date)
+
+
+pop_long <- populacja_data %>%
+  pivot_longer(
+    cols = -Province,
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  mutate(Year = as.numeric(Year))
+
+df <- pop_long   
+year_col <- 'Year'
+val_col <- 'Value'
+df[[year_col]] <- as.integer(as.character(df[[year_col]]))
+n <- nrow(df)
+if (n == 0) stop("No rows after filtering")
+
+
+df_expanded <- df[rep(seq_len(n), each = 12), , drop = FALSE]
+months <- sprintf("%02d", 1:12)
+df_expanded <- df_expanded %>%
+  group_by(Province, .data[[year_col]]) %>%
+  mutate(Month = months[row_number()]) %>%
+  ungroup()
+
+
+df_expanded <- df_expanded %>%
+  mutate(Date = paste0(as.character(.data[[year_col]]), "M", Month)) %>%
+  select(Province, Date, Value = all_of(val_col))
+
+df_expanded <- df_expanded %>%
+  mutate(Type = "Population") %>%
+  select(Province, Type, Date, Value)
+
+wide <- df_expanded %>%
+  pivot_wider(names_from = Date, values_from = Value)
+
+full_dates <- seq(as.Date("1941-01-01"), as.Date("2024-12-01"), by = "month")
+
+full_cols <- format(full_dates, "%Y") |> paste0("M", format(full_dates, "%m"))
+
+existing_cols <- colnames(wide)
+
+value_cols <- setdiff(existing_cols, c("Province", "Type"))
+
+missing_cols <- setdiff(full_cols, value_cols)
+
+for (col in missing_cols) {
+  wide[[col]] <- NA
+}
+
+# Province | Type | 1941M01 | 1941M02 | ... | 2024M12
+wide <- wide %>%
+  select(Province, Type, all_of(full_cols))
+
+population_final <- wide
+```
+
+
+```{r}
+data <- read.csv('pib_final.csv', sep=',')
+colnames(data) <- c('Province', 2024:2000)
+data <- data %>%
+  mutate(across(
+    .cols = -Province,
+    .fns = ~ as.numeric(gsub(",", "", .))
+  ))
+
+years <- names(data)[names(data) != "Province"]
+
+years <- as.numeric(years)
+
+min_year <- min(years)
+max_year <- max(years)
+
+all_dates <- expand.grid(
+  Year = 1941:2024,
+  Month = sprintf("%02d", 1:12)
+) %>%
+  mutate(Date = paste0(Year, "M", Month)) %>%
+  pull(Date)
+
+data_long <- data %>%
+  pivot_longer(
+    cols = -Province,
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  mutate(Year = as.numeric(Year))
+
+df <- data_long   
+year_col <- 'Year'
+val_col <- 'Value'
+df[[year_col]] <- as.integer(as.character(df[[year_col]]))
+n <- nrow(df)
+if (n == 0) stop("No rows after filtering")
+
+df_expanded <- df[rep(seq_len(n), each = 12), , drop = FALSE]
+months <- sprintf("%02d", 1:12)
+df_expanded <- df_expanded %>%
+  group_by(Province, .data[[year_col]]) %>%
+  mutate(Month = months[row_number()]) %>%
+  ungroup()
+
+df_expanded <- df_expanded %>%
+  mutate(Date = paste0(as.character(.data[[year_col]]), "M", Month)) %>%
+  select(Province, Date, Value = all_of(val_col))
+
+df_expanded <- df_expanded %>%
+  mutate(Type = "PIB") %>%
+  select(Province, Type, Date, Value)
+
+wide <- df_expanded %>%
+  pivot_wider(names_from = Date, values_from = Value)
+
+
+full_dates <- seq(as.Date("1941-01-01"), as.Date("2024-12-01"), by = "month")
+
+full_cols <- format(full_dates, "%Y") |> paste0("M", format(full_dates, "%m"))
+
+existing_cols <- colnames(wide)
+
+value_cols <- setdiff(existing_cols, c("Province", "Type"))
+
+missing_cols <- setdiff(full_cols, value_cols)
+
+for (col in missing_cols) {
+  wide[[col]] <- NA
+}
+
+# Province | Type | 1941M01 | 1941M02 | ... | 2024M12
+wide <- wide %>%
+  select(Province, Type, all_of(full_cols))
+
+pib_final <- wide
+```
+
+
+```{r}
+data <- read.csv('marriages_final.csv', sep=',')
+colnames(data)[-1] <- sub("^X", "", colnames(data)[-1])
+data <- data %>%
+  mutate(across(
+    .cols = -Province,
+    .fns = ~ as.numeric(gsub(",", "", .))
+  ))
+
+wide <- data %>%
+  mutate(Type = "Marriages")
+
+
+full_dates <- seq(as.Date("1941-01-01"), as.Date("2024-12-01"), by = "month")
+
+full_cols <- format(full_dates, "%Y") |> paste0("M", format(full_dates, "%m"))
+
+existing_cols <- colnames(wide)
+
+value_cols <- setdiff(existing_cols, c("Province", "Type"))
+
+missing_cols <- setdiff(full_cols, value_cols)
+
+for (col in missing_cols) {
+  wide[[col]] <- NA
+}
+
+# Province | Type | 1941M01 | 1941M02 | ... | 2024M12
+wide <- wide %>%
+  select(Province, Type, all_of(full_cols))
+
+marriages_final <- wide
+```
+
+
+```{r}
+data <- read.csv('deaths_final.csv', sep=',')
+colnames(data)[-1] <- sub("^X", "", colnames(data)[-1])
+data <- data %>%
+  mutate(across(
+    .cols = -Province,
+    .fns = ~ as.numeric(gsub(",", "", .))
+  ))
+
+wide <- data %>%
+  mutate(Type = "Deaths")
+
+
+full_dates <- seq(as.Date("1941-01-01"), as.Date("2024-12-01"), by = "month")
+
+full_cols <- format(full_dates, "%Y") |> paste0("M", format(full_dates, "%m"))
+
+existing_cols <- colnames(wide)
+
+value_cols <- setdiff(existing_cols, c("Province", "Type"))
+
+missing_cols <- setdiff(full_cols, value_cols)
+
+for (col in missing_cols) {
+  wide[[col]] <- NA
+}
+
+# Province | Type | 1941M01 | 1941M02 | ... | 2024M12
+wide <- wide %>%
+  select(Province, Type, all_of(full_cols))
+
+deaths_final <- wide
+```
+
+
+```{r}
+data <- read.csv('age_final.csv', sep=',')
+colnames(data) <- c('Province', 'AgeGroup', 2015:2024)
+data <- data %>%
+  mutate(across(
+    .cols = !c(Province, AgeGroup),
+    .fns  = ~ as.numeric(gsub(",", "", .))
+  ))
+
+years <- names(data_wide)[!(names(data_wide) %in% c("Province", "AgeGroup"))]
+years <- as.numeric(years)
+
+min_year <- min(years)
+max_year <- max(years)
+
+all_dates <- expand.grid(
+  Year = 1941:2024,
+  Month = sprintf("%02d", 1:12)
+) %>%
+  mutate(Date = paste0(Year, "M", Month)) %>%
+  pull(Date)
+
+data_long <- data %>%
+  pivot_longer(
+    cols = !c(Province, AgeGroup),
+    names_to = "Year",
+    values_to = "Value"
+  ) %>%
+  mutate(Year = as.numeric(Year))
+
+df <- data_long   
+year_col <- 'Year'
+val_col <- 'Value'
+df[[year_col]] <- as.integer(as.character(df[[year_col]]))
+n <- nrow(df)
+if (n == 0) stop("No rows after filtering")
+
+df_expanded <- df[rep(seq_len(n), each = 12), , drop = FALSE]
+months <- sprintf("%02d", 1:12)
+df_expanded <- df_expanded %>%
+  group_by(Province, AgeGroup, .data[[year_col]]) %>%
+  mutate(Month = months[row_number()]) %>%
+  ungroup()
+
+df_expanded <- df_expanded %>%
+  mutate(Date = paste0(as.character(.data[[year_col]]), "M", Month)) %>%
+  select(Province, AgeGroup, Date, Value = all_of(val_col))
+
+df_expanded <- df_expanded %>%
+  mutate(Type = AgeGroup) %>%
+  select(Province, AgeGroup, Type, Date, Value)
+ 
+wide <- df_expanded %>%
+  pivot_wider(names_from = Date, values_from = Value)
+
+
+full_dates <- seq(as.Date("1941-01-01"), as.Date("2024-12-01"), by = "month")
+
+full_cols <- format(full_dates, "%Y") |> paste0("M", format(full_dates, "%m"))
+
+existing_cols <- colnames(wide)
+
+value_cols <- setdiff(existing_cols, c("Province", "AgeGroup", "Type"))
+
+missing_cols <- setdiff(full_cols, value_cols)
+
+for (col in missing_cols) {
+  wide[[col]] <- NA
+}
+
+# Province | Type | 1941M01 | 1941M02 | ... | 2024M12
+wide <- wide %>%
+  select(Province, Type, all_of(full_cols))
+
+age_final <- wide
+
+```
+```{r}
+combined_data <- bind_rows(population_final, pib_final, marriages_final, deaths_final, age_final)
+#filtering only 2022, 2023 and 2024
+combined_data_filtered <- combined_data %>%
+  select(
+    Province,
+    Type,
+    matches("^202[2-4]M\\d{2}$")
+  )
+write.csv(combined_data_filtered, 'combined_economic_data.csv', row.names = FALSE)
+
+```
+
+
+## Putting weights to age groups ##
+
+```{r}
+library(readxl)
+library(dplyr)
+library(tidyr)
+
+df <- read_excel("DatosProvincias3.xlsx") # above data merged with travel time from Valencia
+df$Time <- as.numeric(df$Time)
+
+df_long <- df %>%
+  pivot_longer(
+    cols = starts_with(c("2022", "2023", "2024")), # columnas tipo 2022M01
+    names_to = "Periodo",
+    values_to = "Valor"
+  )
+
+df_long <- df_long %>%
+  separate(Periodo, into = c("Año", "Mes"), sep = "M", convert = TRUE)
+
+df_final <- df_long %>%
+  pivot_wider(
+    names_from = Type,   # columnas nuevas: Population, PIB, Muertes…
+    values_from = Valor  # valores dentro de esas columnas
+  )
+```
+
+
+Regarding the age-group variable, it was included not only to provide an additional segmentation of buyers based on age, but also because we intended to construct an extra weighted variable. In our research, we found a report from the Ministry of Agriculture that quantifies the relative importance of each age segment in the market. For this reason, we aimed to create four additional variables representing the population of each age group weighted by its market relevance.
+
+The importance weights for each age interval were as follows:
+
+Importance of individuals under 35 → 0.1575
+
+Importance of individuals aged 35 to 44 → 0.2875
+
+Importance of individuals aged 45 to 54 → 0.2375
+
+Importance of individuals aged 55 and above → 0.3175
+
+We therefore calculated, for each age group, the number of “average buyers” that one person in that group represents. Groups with values above the overall mean correspond to more than one average buyer, while groups below the mean correspond to less than one. These coefficients remain constant across all observations.
+
+Coeficients
+
+coef0_34: 15.75 / 25 = 0.63
+
+coef35_44: 28.75 / 25 = 1.15
+
+coef45_54: 23.75 / 25 = 0.95
+
+coef55: 31.75 / 25 = 1.27
+
+Finally, the scaled variables were created by multiplying the population of each age group—at the provincial and monthly level—by the corresponding coefcient (weight) for that group.
+
+```{r}
+
+# Pesos relativos exactos centrados en 25
+coef0_34    <- 15.75 / 25   # 0.63
+coef35_44   <- 28.75 / 25   # 1.15
+coef45_54   <- 23.75 / 25   # 0.95
+coef55 <- 31.75 / 25   # 1.27
+
+df_final <- df_final %>%
+  mutate(
+    'ponderada 0-34'    = `0-34`  * coef0_34,
+    'ponderada 35-44'   = `35-44` * coef35_44,
+    'ponderada 45-54'   = `45-54` * coef45_54,
+    'ponderada 55+' = `55+`   * coef55
+  )
+
+#df_final
+
+```
+
+## Adding clients data ##
+
+At the beginning, we needed to create a dataset of potential clients for our analysis.
+The challenge was that publicly available sources were incomplete or inconsistently categorized.
+
+We explored multiple approaches to identify relevant businesses, including APIs, government registries, and commercial databases. Each source had limitations, so we combined them strategically to create a comprehensive list of companies operating in the target sector.
+
+To ensure coverage across regions, we incorporated geographical information (e.g., postal codes) and automated the search process to systematically collect company records.
+
+This process allowed us to build a dataset of potential clients suitable for further analysis. While the dataset does not include sensitive information such as contact details, it captures the necessary structure to study patterns of demand and identify areas for business improvement.
+
+In summary, we now have a curated and structured list of potential clients that forms the foundation for the subsequent analysis.
+
+```{r}
+txt <- "{'Caceres': 306, 'Cadiz': 595, 'Castellon': 385, 'Ciudad Real': 357, 'Cordoba': 624, 'Coruna': 897, 'Cuenca': 160, 'Girona': 550, 'Granada': 679, 'Guadalajara': 111, 'Gipuzkoa': 192, 'Huelva': 304, 'Huesca': 150, 'Jaen': 560, 'Leon': 252, 'Lleida': 296, 'La Rioja': 194, 'Lugo': 320, 'Madrid': 2647, 'Malaga': 1016, 'Murcia': 882, 'Navarra': 231, 'Ourense': 244, 'Asturias': 582, 'Palencia': 72, 'Las Palmas': 589, 'Pontevedra': 834, 'Salamanca': 155, 'Santa Cruz de Tenerife': 772, 'Cantabria': 344, 'Segovia': 99, 'Sevilla': 1177, 'Soria': 59, 'Tarragona': 506, 'Teruel': 76, 'Toledo': 470, 'Valencia': 1703, 'Valladolid': 244, 'Bizkaia': 444, 'Zamora': 107, 'Zaragoza': 449, 'Ceuta': 20, 'Melilla': 17, 'Alava': 138, 'Albacete': 251, 'Alicante': 1320, 'Almeria': 638, 'Avila': 115, 'Badajoz': 503, 'Baleares (Formentera)': 7, 'Baleares (Ibiza)': 87, 'Baleares (Mallorca)': 516, 'Baleares (Menorca)': 55, 'Barcelona': 3036, 'Burgos': 166}"
+
+library(jsonlite)
+txt_json <- gsub("'", '"', txt)
+
+data_list <- fromJSON(txt_json)
+
+df <- data.frame(
+  province = names(data_list),
+  Flower_shops = unlist(data_list),
+  row.names = NULL
+)
+
+colnames(df)[1] = "Province"
+
+replace_provinces <- function(df, replacements) {
+  for (old_name in names(replacements)) {
+    df$Province[df$Province == old_name] <- replacements[[old_name]]
+  }
+  return(df)
+}
+
+replacements <- list(
+  "Caceres" = "Cáceres",
+  "Cadiz"  = "Cádiz",
+  "Castellon" = "Castellón",
+  "Cordoba" = "Córdoba",
+  "Coruna" = "A Coruña",
+  "Gipuzkoa" = "Guipuzcoa",
+  "Jaen" = "Jaén",
+  "Leon" = "León",
+  "Malaga" = "Málaga",
+  "Bizkaia" = "Vizcaya",
+  "Alava" = "Álava",
+  "Almeria" = "Almería",
+  "Avila" = "Ávila"
+)
+df <- replace_provinces(df, replacements)
+
+df_final <- left_join(df_final, df, by='Province') %>%
+  mutate(PIB_per_capita = PIB / Population) %>%
+  relocate(PIB_per_capita, .after = PIB) # adding PIB per capita column
+
+```
+
+```{r}
+#install.packages("openxlsx")
+library(openxlsx)
+write.xlsx(df_final, file = "market_data.xlsx", overwrite = TRUE)
+```
+Now our dataset is ready.

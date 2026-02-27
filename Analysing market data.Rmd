@@ -1,0 +1,638 @@
+---
+title: "Analysing flower shops"
+output: 
+  html_document:
+    self_contained: true
+date: "2025-12-11"
+---
+
+### Jakub Bagiński
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+# Analysing the number of flower shops in provinces
+
+We would like to analyse the number of flower shops in provinces, which variables determine this number and which ones are of little importance. What makes some provinces have more flower shops than others. The aim of this analysis is to identify the factors that have the greatest impact on the number of florists operating in individual provinces.
+
+The florist market is a unique segment of the economy, strongly dependent on both demographic and socioeconomic factors. Flowers are not a necessity – they are purchased primarily for family celebrations, social events, funerals, and as part of a lifestyle and gift-giving culture. Therefore, the number of flower shops in a given province can serve as an interesting indicator of complex social and economic processes. The growth or decline of this sector not only reflects the state of the local economy but also stems from the consumption preferences of residents and their age structure.
+
+Studying the relationship between the number of flower shops and the characteristics of a province can be valuable from both an academic and practical perspective. From a regional economic perspective, it allows for a better understanding of the social and economic factors that support the development of the local service sector. Potential entrepreneurs or market analysts can gain insight into regions where untapped demand exists or where opening a new flower shop would pose a higher risk. Public institutions, in turn, can use this analysis as an example of how demographic and economic data can be used to assess the dynamics of local consumer markets.
+
+Consequently, the goal of this analysis is not only to describe these relationships, but also to understand the mechanisms that govern them: what characteristics of the local community and what level of prosperity favor the development of the flower market; and the importance of different types of factors. Answering these questions will allow us to assess which factors have a real impact on the number of flower shops and which only seem important. This will enable us to create a clear, data-driven picture of the functioning of this specific segment of the economy.
+
+### The data
+
+Acquisited data contain economic, demographic, geographic and flower shops data for Spanish provinces.
+Some variables are changing monthly, some annually and some are constant in time.  
+Variables:
+Province - one of Spanish provinces, including islands and provinces like Ceuta or Melilla.  
+Distance - travel distance in kilometers needed to deliver the product from Valencia to the capital of given province, where the company is located. Constant in time.  
+Año - year (2022, 2023 and 2024)  
+Mes - month  
+Population - population in given province, changing annually. May describe the potential demand for the flowers.  
+PIB - GDP in given province in thousands of €, changing annually. Could describe how much people here can in total afford to buy.  
+PIB_per_capita - in thousands of €, changing annually. May show how wealthy people are there in average and to distinguish whether given province is rich or not.  
+Marriages - number of marriages in given province in each month. This is one of the occasions to buy flowers for.  
+Deaths - number of deaths in given province in each month. This is also one of the occasions to buy flowers for.  
+0-34, 35-44, 45-54, 55+ - population in this specific age group. Changing annually. Our research showed that the sales of the flowers varies depending on the age of customer. Some age groups tend to buy more flowers than others.
+weighted 0-34, 35-44, 45-54, 55+ - weighted population in this specific age group by its market relevance.   Changing annually. Represent the number of “average buyers” in that group. Increases the number in 55+ and 35-44 age groups and reduces in the remaining, by different weights taken from the report of the Ministry of Agriculture.  
+Flower_shops - number of flower shops, constant in time. In particular, represents the number of people who have the licencse to sell he flowers. So it represents not only flower shops, but also bazaars, supermarkets, or other types of businesses that also sell flowers and could be potential clients, even though that it isn’t their main activity.  
+Latitude, Longitude - geographical coordinates of the middle point of the province
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(corrplot)
+library(readxl)
+library(purrr)
+library(gridExtra)
+library(broom)
+library(scales) 
+library(leaflet)
+library(shiny)
+
+data <- read.csv('df_final.csv') %>% filter(Pais == 'España') %>% select(Provincia, Distancia_Valencia, Año, Mes, Population, GDP, Marriages, Deaths, AG_0.34, AG_35.44, AG_45.54, AG_55., AG_0_34_weighted, AG_35_44_weighted, AG_45_54_weighted, AG_55p_weighted, Flower_shops, Latitud, Longitud)
+
+data<-data %>% mutate(PIB_per_capita = GDP / Population)
+
+colnames(data) <- c("Province", "Distance", "Año", "Mes", "Population", "PIB", "Marriages", "Deaths", "0-34", "35-44", "45-54", "55+", "weighted 0-34", "weighted 35-44", "weighted 45-54", "weighted 55+", "Flower_shops", "Latitude", "Longitude", "PIB_per_capita")
+```
+
+Because only marriages and deaths are changing monthly we will aggregate them to keep values for the whole year. At this moment month column is pointless, so will be removed.
+
+We will also add variable weighted_sum to represent actual potential client base. It will be similar to population but with slight adjustment to weights of specific age groups.
+
+```{r}
+data$weighted_sum <- data$`weighted 0-34`+ data$`weighted 35-44`+data$`weighted 45-54`+data$`weighted 55+`
+
+data <- data %>%
+  distinct(Province, Año, Mes, .keep_all = TRUE)
+
+data <- left_join(data, data %>%
+  group_by(Province, Año) %>%
+  summarise(
+    Marriages = sum(Marriages),
+    Deaths = sum(Deaths),
+    .groups = "drop"
+  ), by=c('Province', 'Año'))
+
+data$Marriages = data$Marriages.y
+data$Deaths = data$Deaths.y
+data$Marriages.x = NULL
+data$Deaths.x = NULL
+data$Marriages.y = NULL
+data$Deaths.y = NULL
+
+data <- data %>%
+  filter(Mes == 10)  # leaving only one row per year
+
+data$Mes <- NULL
+```
+
+### Data exploration
+
+We will take a look at the summary of the data.
+
+```{r}
+summary(data)
+```
+There are no missing or negative values (apart from longitude but this is acceptable).
+We will plot the distribution of basic variables like flower shops or distance per each province.
+
+```{r, fig.width = 12, fig.height = 6}
+data_summary <- data %>%
+  group_by(Province) %>%
+  summarise(Flower_shops = mean(Flower_shops, na.rm = TRUE))
+
+data_summary <- data_summary %>%
+  arrange(desc(Flower_shops))
+
+ggplot(data_summary, aes(x = reorder(Province, Flower_shops), Flower_shops)) +
+  geom_bar(stat = "identity", fill='darkolivegreen2') +
+  coord_flip() +
+  labs(
+    title = "Distribution of flower shops in provinces",
+    x = "Province", y = "Number of flower shops"
+  ) +
+  theme(axis.text.y = element_text(size=6))
+```
+
+As we can see the most popular provinces for flower shops are the biggest Spanish cities.
+```{r, fig.width = 12, fig.height = 6}
+data_summary <- data %>%
+  group_by(Province) %>%
+  summarise(Distance = mean(Distance, na.rm = TRUE))
+
+data_summary <- data_summary %>%
+  arrange(desc(Distance))
+
+ggplot(data_summary, aes(x = reorder(Province, Distance), Distance)) +
+  geom_bar(stat = "identity", fill='springgreen3') +
+  coord_flip() +
+  labs(
+    title = "Distance needed to reach each provinces",
+    x = "Province", y = "Distance from Valencia [km]"
+  ) +
+  theme(axis.text.y = element_text(size=6))
+```
+
+For the travel distance, we can see that there are two very far provinces - Canary Islands (Santa Cruz de Tenerife and Las Palmas). Other provinces are within 1000km distance.
+
+```{r}
+plot_xy <- function(data, x, y, color, lm=TRUE, title = NULL, normalize.x=FALSE, normalize.y=FALSE) {
+  x_sym <- sym(x)
+  y_sym <- sym(y)
+  
+  if (normalize.x) {
+    data <- data %>%
+      mutate(
+        x_norm = !!x_sym / Population
+      )
+    
+    x_sym <- sym("x_norm")
+  }
+  
+  if (normalize.y) {
+    data <- data %>%
+      mutate(
+        y_norm = !!y_sym / Population
+      )
+    
+    y_sym <- sym("y_norm")
+  }
+  
+  # Default title
+  if (is.null(title)) {
+    title <- paste0(x, " vs ", y)
+    if (normalize.x) title.x <- paste0(x, " per capita") else title.x <- x
+    if (normalize.y) title.y <- paste0(y, " per capita") else title.y <- y
+    title <- paste0(title.x, " vs ", title.y)
+  }
+  
+  return (ggplot(data, aes(x = !!x_sym, y = !!y_sym)) +
+    geom_point(alpha = 0.7) +
+    (if(lm) geom_smooth(method = "lm", se = FALSE, color = color) else NULL)+
+    labs(
+      title = title,
+      x = title.x,
+      y = title.y
+    ))
+}
+```
+
+Now we will take a look at a relation between GDP and other demographic variables.
+
+```{r, fig.width = 12, fig.height = 6}
+plot_xy(data, "PIB", '0-34', color='springgreen3')
+```
+
+We can see very strong correlation between GDP and population in 0-34 age. But here, as well as in many cases, it is important to normalize data - divide it by number of population, because without it we could see some kind of correlation, but it would be only because given province has many people and thus all the indicies have high values.
+
+```{r, fig.width = 12, fig.height = 6}
+grid.arrange(
+  plot_xy(data, "PIB_per_capita", '0-34', lm=FALSE, normalize.y = TRUE),
+  plot_xy(data, "PIB_per_capita", '35-44', lm=FALSE, normalize.y = TRUE),
+  plot_xy(data, "PIB_per_capita", '45-54', lm=TRUE, color='springgreen3', normalize.y = TRUE),
+  plot_xy(data, "PIB_per_capita", '55+', lm=FALSE, normalize.y = TRUE),
+  ncol=2, nrow=2
+)
+```
+
+We can see no relation between PIB per capita and any of the age groups except 45-54. The relation is weak, however, since 45-54 is a productive age, the more people here, the higher GDP. Nevertheless, similar relation does not exist in 35-44 age group.
+
+```{r, fig.width = 12, fig.height = 6}
+grid.arrange(
+  plot_xy(data, 'PIB_per_capita', 'Marriages', lm=TRUE, color='springgreen3', normalize.y = TRUE),
+  plot_xy(data, 'PIB_per_capita', 'Deaths', lm=FALSE, normalize.y = TRUE),
+  ncol=2
+)
+```
+
+There is a visible relation between the number of marriages per capita and GDP per capita. The more marriages, the smaller GDP per capita is.
+We can see no linear relation between GDP per capita and deaths per capita.
+
+```{r, fig.width = 12, fig.height = 6}
+grid.arrange(
+  plot_xy(data, "0-34", "Marriages", 'springgreen3', normalize.x = TRUE, normalize.y = TRUE),
+  plot_xy(data, "55+", "Deaths", 'springgreen3', normalize.x = TRUE, normalize.y = TRUE),
+  ncol=2
+)
+```
+
+We can see a correlation between number of people in age 55+ and the number of deaths. There is also a relation between marriages and number of people in age 0-34.
+```{r, fig.width = 12, fig.height = 6}
+plot_xy(data, "0-34", "55+", 'springgreen3', normalize.x = TRUE, normalize.y = TRUE)
+plot_xy(data, "Population", 'weighted_sum', lm=FALSE, normalize.y = TRUE)
+```
+
+One interesting plot is relation between percentage of young and old people. It is very much linear, the higher percentage of young people, the smaller is for old ones.
+We can also see how eager to buy flowers are provinces with regard to their population. We can see that the provinces with weighted sum greater than population appear only when population of a province is less than one million.
+
+```{r, fig.width = 12, fig.height = 6}
+grid.arrange(
+  plot_xy(data, "Population", "Flower_shops", 'springgreen3'),
+  plot_xy(data, "PIB", "Flower_shops", 'springgreen3'),
+  ncol=2
+)
+grid.arrange(
+  plot_xy(data, "Population", "Flower_shops", lm = FALSE, normalize.y = TRUE),
+  plot_xy(data, "weighted_sum", "Flower_shops", lm = FALSE, normalize.y = TRUE), ncol=2
+)
+grid.arrange(
+  plot_xy(data, "weighted 0-34", "Flower_shops", lm = FALSE, normalize.x = TRUE, normalize.y = TRUE),
+  plot_xy(data, "weighted 35-44", "Flower_shops", lm = FALSE, normalize.x = TRUE, normalize.y = TRUE),
+  plot_xy(data, "weighted 45-54", "Flower_shops", lm = FALSE, normalize.x = TRUE, normalize.y = TRUE),
+  plot_xy(data, "weighted 55+", "Flower_shops", lm = FALSE, normalize.x = TRUE, normalize.y = TRUE),
+  ncol=2, nrow=2
+)
+```
+
+When we plot different variables per capita then we can see that there is no relation between the number of flower shops and population (weighted or not) or any of the age groups. But naturally the number of shops grows with total population or GDP.
+```{r, fig.width = 12, fig.height = 6}
+grid.arrange(
+  plot_xy(data, "PIB_per_capita", "Flower_shops", 'springgreen3', normalize.y = TRUE),
+  plot_xy(data, "Marriages", "Flower_shops", lm=FALSE, normalize.x = TRUE, normalize.y = TRUE),
+  plot_xy(data, "Deaths", "Flower_shops", 'springgreen3', normalize.x = TRUE, normalize.y = TRUE),
+  ncol=2, nrow=2
+)
+```
+
+The relation with deaths per capita is very slight and barely visible but both grow together. Marriages have no relation with flower shops. But we can see a trend with GDP per capita. The greater GDP per capita is, the less flower shops per capita are in the province.
+
+We will also take a look for a correlation between variables.
+
+```{r, fig.width = 12, fig.height = 6}
+corrplot(cor(select(data, Distance, Population, PIB, PIB_per_capita, `0-34`, `35-44`, `45-54`, `55+`, `weighted 0-34`, `weighted 35-44`, `weighted 45-54`, `weighted 55+`, weighted_sum, Marriages, Deaths, Flower_shops), use = "complete.obs"))
+```
+
+We can see that almost everything is correlated with each other. This is because values are absolute and the bigger the province is, the more everything it has. Therefore, we will modify all variables by dividing them by the number of people in province. Thanks to that we could see true correlation, reducing the problem of scaling.
+
+```{r, fig.width = 12, fig.height = 6}
+data_per_capita <- data
+
+data_per_capita$`0-34_per_capita` <- data$`0-34` / data$Population
+data_per_capita$`35-44_per_capita` <- data$`35-44` / data$Population
+data_per_capita$`45-54_per_capita` <- data$`45-54` / data$Population
+data_per_capita$`55+_per_capita` <- data$`55+` / data$Population
+data_per_capita$`weighted 0-34_per_capita` <- data$`weighted 0-34` / data$Population
+data_per_capita$`weighted 35-44_per_capita` <- data$`weighted 35-44` / data$Population
+data_per_capita$`weighted 45-54_per_capita` <- data$`weighted 45-54` / data$Population
+data_per_capita$`weighted 55+_per_capita` <- data$`weighted 55+` / data$Population
+data_per_capita$weighted_sum_per_capita <- data$weighted_sum / data$Population
+data_per_capita$Marriages_per_capita <- data$Marriages / data$Population
+data_per_capita$Deaths_per_capita <- data$Deaths / data$Population
+data_per_capita$Flower_shops_per_capita <- data$Flower_shops / data$Population
+
+data_per_capita <- data_per_capita %>% select(-c(PIB, `0-34`, `35-44`, `45-54`, `55+`, `weighted 0-34`, `weighted 35-44`, `weighted 45-54`, `weighted 55+`, weighted_sum, Marriages, Deaths, Flower_shops))
+
+corrplot(cor(select(data_per_capita, Distance, Population, PIB_per_capita, `0-34_per_capita`, `35-44_per_capita`, `45-54_per_capita`, `55+_per_capita`, `weighted 0-34_per_capita`, `weighted 35-44_per_capita`, `weighted 45-54_per_capita`, `weighted 55+_per_capita`, weighted_sum_per_capita, Marriages_per_capita, Deaths_per_capita, Flower_shops_per_capita), use = "complete.obs"))
+
+```
+
+Obviously, there is very high correlation between age groups and its weighted value. Also we can see high correlation between percentage of older people (also weighted) and weighted total population or deaths. On the other hand, the correlation between the percentage of 0-34 age and marriages is low.
+What is more, we can see high negative correlation between the percentage of young and old people. Both weighted or not. There also exists high negative correlation (but slightly lower) between 35-44 and 55+ age groups.
+Other variables are not very much correlated with each other.
+
+Now we will plot the changes in time of demographic and economic data, summarised for whole country, in order to see how those values are generally changing in time. 
+
+```{r, fig.width = 12, fig.height = 6}
+country_year <- data_per_capita %>%
+  group_by(Año) %>%
+  summarise(
+    Deaths_per_capita = mean(Deaths_per_capita, na.rm = TRUE),
+    Marriages_per_capita = mean(Marriages_per_capita, na.rm = TRUE),
+    PIB_per_capita = mean(PIB_per_capita, na.rm = TRUE),
+    Population = sum(Population, na.rm = TRUE),
+    `0-34_per_capita` = mean(`0-34_per_capita`, na.rm = TRUE),
+    `35-44_per_capita` = mean(`35-44_per_capita`, na.rm = TRUE),
+    `45-54_per_capita` = mean(`45-54_per_capita`, na.rm = TRUE),
+    `55+_per_capita` = mean(`55+_per_capita`, na.rm = TRUE),
+    `weighted 0-34_per_capita` = mean(`weighted 0-34_per_capita`, na.rm = TRUE),
+    `weighted 35-44_per_capita` = mean(`weighted 35-44_per_capita`, na.rm = TRUE),
+    `weighted 45-54_per_capita` = mean(`weighted 45-54_per_capita`, na.rm = TRUE),
+    `weighted 55+_per_capita` = mean(`weighted 55+_per_capita`, na.rm = TRUE),
+    weighted_sum_per_capita = mean(weighted_sum_per_capita, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+country_year_long <- country_year %>%
+  pivot_longer(
+    cols = c(Deaths_per_capita, Marriages_per_capita, PIB_per_capita, Population, `0-34_per_capita`, `35-44_per_capita`, `45-54_per_capita`, `55+_per_capita`, `weighted 0-34_per_capita`, `weighted 35-44_per_capita`, `weighted 45-54_per_capita`, `weighted 55+_per_capita`, weighted_sum_per_capita),
+    names_to = "variable",
+    values_to = "value"
+  )
+
+ggplot(country_year_long, aes(x = Año, y = value, color = variable)) +
+  geom_line(size = 1) +
+  facet_wrap(~ variable, scales = "free_y") +
+  labs(
+    title = "Various indicies in a national scale",
+    x = "Year",
+    y = "Value"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none") +
+  scale_x_continuous(breaks = 2022:2024)
+```
+
+As we can see, all the variables here except deaths are almost linear in time. So they can be described using slope and intercept and almost ideally model real values.
+But deaths are very much non-linear so here we need a different model. Therefore we will model them using three values: mean, maximum and minimum. Thanks to this, we can represent high peaks and low peaks in the number of deaths, as well as the average value over time. Together they model the range for the number of deaths in province and default value.
+Thanks to this conversion we can reduce variable Año and there will be no need to duplicate in time constant values such as flower shops or travel time.
+
+```{r}
+linear_vars <- c(
+  "Marriages_per_capita", "PIB_per_capita", "Population",
+  "0-34_per_capita", "35-44_per_capita", "45-54_per_capita", "55+_per_capita", "weighted_sum_per_capita",
+  "weighted 0-34_per_capita", "weighted 35-44_per_capita", "weighted 45-54_per_capita",
+  "weighted 55+_per_capita"
+)
+
+# fitting linear model
+fit_lm_one_row <- function(df, var) {
+  df$Año_shifted <- df$Año - 2022
+  model <- lm(df[[var]] ~ df$Año_shifted)
+  params <- coef(model)
+  tibble(
+    !!paste0(var, "_intercept") := params[1],
+    !!paste0(var, "_slope") := params[2]
+  )
+}
+
+# fitting model for deaths
+summarize_deaths <- function(df) {
+  tibble(
+    Deaths_per_capita_level = mean(df$Deaths_per_capita, na.rm = TRUE),
+    Deaths_per_capita_max = max(df$Deaths_per_capita, na.rm = TRUE),
+    Deaths_per_capita_min = min(df$Deaths_per_capita, na.rm = TRUE)
+  )
+}
+
+data_pc_modeled <- data_per_capita %>%
+  group_by(Province) %>%
+  group_modify(~{
+    df <- .x
+    lm_rows <- map(linear_vars, ~ fit_lm_one_row(df, .x))
+    lm_all <- bind_cols(lm_rows)
+    death_row <- summarize_deaths(df)
+    static_row <- tibble(
+      Time = unique(df$Time),
+      Flower_shops_per_capita = mean(df$Flower_shops_per_capita)
+    )
+    bind_cols(static_row, lm_all, death_row)
+  }) %>%
+  ungroup()
+```
+
+Now we will check how the correlation between variables from modelling looks like. The correlation matrix is now too big to plot and would be unreadable. But we can look for highest correlations in the matrix.
+```{r}
+data_numeric <- data_pc_modeled %>% select(-Province)
+cor_matrix <- cor(data_numeric, use = "complete.obs")
+
+flower_shops_corr <- cor_matrix[, "Flower_shops_per_capita"]
+
+high_corr_columns <- names(flower_shops_corr[abs(flower_shops_corr) > 0.35 &
+  names(flower_shops_corr) != "Flower_shops_per_capita"])
+
+cat("Variables with absolute value of correlation with flower shops per capita > 0.35:\n")
+
+for (var in high_corr_columns){
+  print(paste0(var, " correlation: ", round(cor_matrix[var, "Flower_shops_per_capita"], digits = 3)))
+}
+```
+
+The number of flower shops per capita has the highest absolute values of correlation with above variables, but still these numbers show weak correlation. It means that it surely cannot be described as any single variable from the dataset. Nevertheless, deaths per capita appear to be among the most important ones.
+
+Although, there is no strong correlation between the number of flower shops per capita and any other single variable, we would like to see if maybe some variables together can describe it better. For this reason, we would like to create a linear regression model and check the importance of variables there. But the model itself cannot be trained with province names. This is because, they are like IDs in this dataset and model would learn the mapping to the shops by heart.
+Also the data should be normalised before putting them into linear regression model. This is because high values (for example GDP per capita) would always have small importance and small values (for example marriages per capita) will have greater only because they are small. In order to achive similar range of all variables, we will use normalisation. This process will scale all the variables to have mean equal to zero and standard deviation equal to one (except target variable we want to predict). Then all the data will have the same scale and we can compare the importance between them.
+What is more, some variables in dataset are a linear combination of other variables. These are all the weighted values. It is pointless to use all of them in linear regression model, therefore we will not use here raw age groups, leaving weighted values of them, supposing that weighted values could have higher importance than raw ones. Also weighted sum of population is a linear combination so will be removed here.
+
+### Linear regression model
+```{r, fig.width = 12, fig.height = 6}
+cols_to_remove <- c("0-34_per_capita_intercept","0-34_per_capita_slope", "35-44_per_capita_intercept","35-44_per_capita_slope","45-54_per_capita_intercept","45-54_per_capita_slope","55+_per_capita_intercept","55+_per_capita_slope", "weighted_sum_per_capita_intercept","weighted_sum_per_capita_slope")
+
+#normalisation
+df <- data_pc_modeled[, !(names(data_pc_modeled) %in% cols_to_remove)]
+target_col <- "Flower_shops_per_capita"
+num_cols <- sapply(df, is.numeric)
+#num_cols[target_col] <- FALSE # do not normalise target column
+df_scaled <- df
+df_scaled[, num_cols] <- scale(df[, num_cols])
+
+lm_model <- lm(Flower_shops_per_capita ~ . - Province, data = df_scaled)
+predicted_shops_pc <- predict(lm_model, newdata = df_scaled)
+
+ggplot(df_scaled, aes(x = df_scaled$Flower_shops_per_capita, y = predicted_shops_pc)) +
+  geom_point(alpha = 0.8, color = "darkgreen") +
+  geom_abline(slope = 1, intercept = 0, color = "springgreen3", linetype = "dashed") +
+  labs(
+    title = "Linear regression: prediction vs true values of flower shops per capita in provinces",
+    x = "True values",
+    y = "Prediction"
+  ) +
+  theme_minimal()
+
+```
+
+We can see that predicted values are not that far from real ones. In order to evaluate this model, we will use the coefficient of determination R².
+```{r}           
+r2 <- summary(lm_model)$r.squared
+cat("Determination coefficient R²:", round(r2, 3), "\n")
+```
+
+The obtained R² value of 0.551 means that approximately 55% of the variation in the number of flower shops
+per capita can be explained by the variables included in the model. This is an acceptable result for economic data, where a significant level of unobserved variability is often present.
+
+The most important variables in the regression model:
+
+```{r, fig.width = 12, fig.height = 6}
+coef_df <- as.data.frame(summary(lm_model)$coefficients)
+coef_df$Variable <- rownames(coef_df)
+colnames(coef_df) <- c("Estimate", "StdError", "tValue", "pValue", "Variable")
+
+coef_df <- coef_df[coef_df$Variable != "(Intercept)", ]
+
+coef_df <- coef_df[order(abs(coef_df$Estimate), decreasing = TRUE), ]
+
+coef_top10 <- head(coef_df, 6)
+
+ggplot(coef_top10, aes(x = reorder(Variable, Estimate), y = Estimate, fill = Estimate > 0)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "darkolivegreen2", "FALSE" = "darkgreen")) +
+  labs(
+    title = "Importance of top 6 variables in linear regression",
+    x = "Variable",
+    y = "Importance"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+Light green values mean that those variables have positive impact on the number of flower shops per capita. Dark green ones have negative impact. We can see that the most important variables are related to deaths and age groups. The next ones are related to GDP, then population. The highest absolute importance can be seen in weighted 55+ intercept, which is the base number of old people there. Another variable, but half as important is the intercept of weighted young people (0-34). Both factors have negative values (about -4.5e-4 and -2e-4 accordingly), meaning that the more people in those groups, the less flower shops. Those numbers are relativelty low, because they predict the number of shops per capita which is between 2e-4 and 1e-3.
+
+On the other side, the deaths factors, especially maximum, is showing great importance in this linear regression model (about +2e-4). Interestingly, the minimum value of deaths has lower importance and the mean has even lower. Other variables have smaller relevance.  
+
+What may be surprising is that we already know that deaths are correlated with people in age 55+ group. However, in this model they are on the opposite sides, balancing final value of flower shops.
+
+This indicates that mainly the deaths together with the intercept of age groups (especially 55+) dominate the prediction of flower shops per capita.
+
+### Visualisation
+
+With the knowledge about the most important factors we would like to visualise them on the map.
+Firstly, we would like to see how on a map look a ratio between population and the number of flower shops in provinces.
+```{r, fig.width = 9, fig.height = 6}
+prov_counts <- data %>%
+  group_by(Province, Latitude, Longitude) %>%
+  summarise(
+    People_per_shop = Flower_shops,
+    .groups = "drop"
+  )
+
+pal <- colorNumeric(
+  palette = c("darkolivegreen2", "darkseagreen3", "springgreen3", "darkgreen", "#013220"),
+  domain = prov_counts$People_per_shop
+)
+
+leaflet(prov_counts) %>%
+  addTiles() %>%
+  addCircleMarkers(
+    lng = ~Longitude,
+    lat = ~Latitude,
+    radius = 6,
+    color = ~pal(People_per_shop),
+    stroke = FALSE,
+    fillOpacity = 0.85,
+    popup = ~paste0(
+      "<b>", Province, "</b><br>",
+      "Number of flower shops: ", comma(People_per_shop), "<br>"
+    )
+  ) %>%
+  addLegend(
+    "bottomright",
+    pal = pal,
+    values = prov_counts$People_per_shop,
+    title = "Number of flower shops",
+    opacity = 1
+  )
+
+```
+
+We can see that the most people per one shop can be found in cities like Ceuta and Melilla and on the north of Spain, around the Basque Country and Guipuzcoa. On the other side, the least people per one shop can be found on the north-west of Spain and in eastern Andalucia.
+
+Now we will visualise how the number of deaths divided by the number of flower shops are changing in time in Spanish provinces.
+
+```{r echo=FALSE, fig.width = 9, fig.height = 6}
+map_data <- data_per_capita %>%
+  mutate(Date = as.Date(paste0(Año, "-01-01"))) %>%
+  group_by(Date, Province, Latitude, Longitude) %>%
+  summarise(
+    value = mean(Deaths_per_capita / Flower_shops_per_capita),
+    .groups = "drop"
+  )
+
+years <- sort(unique(format(map_data$Date, "%Y")))
+pal <- colorNumeric(
+  palette = c("darkolivegreen2", "darkseagreen3", "springgreen3", "darkgreen", "#013220"),
+  domain = map_data$value
+)
+
+m <- leaflet() %>%
+  addTiles()
+
+for (yr in years) {
+  df <- map_data %>% filter(format(Date, "%Y") == yr)
+  m <- m %>% addCircleMarkers(
+    data = df,
+    lng = ~Longitude,
+    lat = ~Latitude,
+    fillColor = ~pal(value),
+    fillOpacity = 0.85,
+    color = "#333",
+    weight = 0.7,
+    radius = 8,
+    group = yr,
+    popup = ~paste0(
+      "<b>", Province, "</b><br>",
+      "Year: ", yr, "<br>",
+      "Value: ", round(value, 2)
+    )
+  )
+}
+
+m <- m %>% addLegend(
+  "bottomright",
+  pal = pal,
+  values = map_data$value,
+  title = "Deaths per shop"
+) %>% addLayersControl(
+  baseGroups = years,
+  options = layersControlOptions(collapsed = FALSE)
+)
+
+m
+```
+
+We can see that the most deaths per one shop are in the northern Spain, especially reaching around 40 in Guipuzcoa in each year. Interestingly, Guipuzcoa have death rate similar to national average. The smallest numbers are in eastern Andalucia and Canary Islands.
+
+Given that the linear regression model picked 0-34 and 55+ age groups as important factors of similar sign, we will visualise the sum of them per flower shops in each province through years.
+
+```{r echo=FALSE, fig.width = 9, fig.height = 6}
+map_data <- data_per_capita %>%
+  mutate(Date = as.Date(paste0(Año, "-01-01"))) %>%
+  group_by(Date, Province, Latitude, Longitude) %>%
+  summarise(
+    value = mean((`weighted 0-34_per_capita` + `weighted 55+_per_capita`) /
+                   Flower_shops_per_capita),
+    .groups = "drop"
+  )
+
+years <- sort(unique(format(map_data$Date, "%Y")))
+
+pal <- colorNumeric(
+  palette = c("darkolivegreen2", "darkseagreen3", "springgreen3", "darkgreen", "#013220"),
+  domain = map_data$value
+)
+
+m <- leaflet() %>%
+  addTiles()
+
+for (yr in years) {
+  df <- map_data %>% filter(format(Date, "%Y") == yr)
+  m <- m %>% addCircleMarkers(
+    data = df,
+    lng = ~Longitude,
+    lat = ~Latitude,
+    fillColor = ~pal(value),
+    fillOpacity = 0.85,
+    color = "#333",
+    weight = 0.7,
+    radius = 8,
+    group = yr,
+    popup = ~paste0(
+      "<b>", Province, "</b><br>",
+      "Year: ", yr, "<br>",
+      "Value: ", round(value, 2)
+    )
+  )
+}
+
+m <- m %>% addLegend(
+  "bottomright",
+  pal = pal,
+  values = map_data$value,
+  title = "Young+Old per shop"
+) %>% addLayersControl(
+  baseGroups = years,
+  options = layersControlOptions(collapsed = FALSE)
+)
+
+m
+```
+
+The map looks very similar to the previous one with total population per flower shops. But this one also enhances the ratio in northern Spain, especially in Guipuzcoa to almost 2600 young or old people per shop. But similar to the previous map, maximum values can be found in Ceuta and Melilla (about 3000).
+The smallest values (about 750) can as well be found in eastern Andalucia and north-west part of Spain.
+Values and proportions between provinces look very similar in different years.
