@@ -1,4 +1,4 @@
-# Project Title: Sales, product evolution and logistics in XXX: Integrating industrial and data science perspectives
+# Sales, product evolution and logistics in XXX: Integrating industrial and data science perspectives
 
 ## Overview
 This repository presents a portfolio-ready version of a real-world data analysis project.  
@@ -18,3 +18,4 @@ All data used here has been anonymized, and sensitive information has been remov
 ## Notes
 - Dataset contains only anonymized, non-sensitive information.  
 - The project is intended as a portfolio example demonstrating data analysis and business insight skills.
+
